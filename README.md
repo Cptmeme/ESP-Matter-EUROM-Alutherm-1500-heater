@@ -11,10 +11,7 @@ It replaces the original Tuya Wi-Fi firmware with a custom C++ application runni
 ## 🚀 Features
 
 * **Connectivity:** **Matter over Thread** (Minimal Thread Device). Requires a Thread Border Router such as a HomePod Mini, Apple TV 4K or Nest Hub v2.
-* **Three Endpoints:**
-    1.  **Thermostat:** Heat / Off, target temperature and room temperature. *Heat* switches the heater on in **Program** mode, so the setpoint governs instead of a fixed power level.
-    2.  **Eco Switch:** Toggles the heater's Eco mode ("EC" on the display).
-    3.  **Powerful Switch:** On = manual 1500 W. Off = back to Program (thermostat) mode.
+* **Thermostat Endpoint:** Heat / Off, target temperature and room temperature. *Heat* switches the heater on in **Program** mode, so the setpoint governs instead of a fixed power level. Eco mode and the manual power levels stay available on the heater itself.
 * **Two-way Sync:** Changes made on the heater itself (buttons, remote) are reported back to Matter.
 * **Full Tuya Handshake:** This heater only responds after the complete Tuya MCU start-up sequence (heartbeat → product query → work mode → network status "online" → query all datapoints), followed by a 15 s heartbeat. The MCU's clock requests are answered.
 * **Factory Reset:** Toggle the heater's power 10 times rapidly (each toggle within 3 s of the previous one) to factory reset the Matter credentials.
@@ -50,8 +47,8 @@ The original Tuya Wi-Fi module was replaced with a **WT0132C6-S5** (ESP32-C6) mo
 
 ### Configuration
 1.  **Partition Table:** A custom `partitions.csv` is used to allocate space for Matter credentials and Thread storage.
-2.  **Endpoint Limit:** The root endpoint counts towards the dynamic endpoint limit, so this firmware needs **4** (Root, Thermostat, Eco, Powerful):
-    * `Component config` -> `ESP Matter` -> `Maximum dynamic endpoints` = **4** (or higher)
+2.  **Endpoint Limit:** The root endpoint counts towards the dynamic endpoint limit. This firmware uses 2 (Root, Thermostat); the limit is set to **3** in `sdkconfig.defaults`. Raise it before adding more endpoints:
+    * `Component config` -> `ESP Matter` -> `Maximum dynamic endpoints`
 3.  **Thread Device Type:** Minimal Thread Device (`CONFIG_OPENTHREAD_MTD=y`).
 
 ### Build Commands

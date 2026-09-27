@@ -18,8 +18,6 @@ using namespace esp_matter;
 
 static const char *TAG = "app_driver";
 extern uint16_t thermostat_endpoint_id;
-extern uint16_t eco_endpoint_id;
-extern uint16_t powerful_endpoint_id;
 static TuyaHeaterDriver heater;
 
 // Global Temp for AAI (LocalTemperature is served via AttributeAccessInterface)
@@ -76,19 +74,6 @@ static void AppDriverUpdateTask(intptr_t context)
     esp_matter::attribute::report(thermostat_endpoint_id, Thermostat::Id,
                                   Thermostat::Attributes::ThermostatRunningState::Id, &run_val);
 
-    // Eco mode (DP102)
-    if (eco_endpoint_id != 0) {
-        esp_matter_attr_val_t eco_val = esp_matter_bool(data->state.eco);
-        esp_matter::attribute::report(eco_endpoint_id, OnOff::Id, OnOff::Attributes::OnOff::Id, &eco_val);
-    }
-
-    // Powerful = manual 1500 W (DP101 == 2)
-    if (powerful_endpoint_id != 0) {
-        bool powerful = (data->state.power_level == PWR_1500);
-        esp_matter_attr_val_t pf_val = esp_matter_bool(powerful);
-        esp_matter::attribute::report(powerful_endpoint_id, OnOff::Id, OnOff::Attributes::OnOff::Id, &pf_val);
-    }
-
     free(data);
 }
 
@@ -131,16 +116,6 @@ esp_err_t app_driver_attribute_update(app_driver_handle_t driver_handle, uint16_
 {
     if (endpoint_id == thermostat_endpoint_id && cluster_id == Thermostat::Id) {
         return app_driver_thermostat_set_value(driver_handle, val, attribute_id);
-    }
-    else if (endpoint_id == eco_endpoint_id && cluster_id == OnOff::Id &&
-             attribute_id == OnOff::Attributes::OnOff::Id) {
-        ESP_LOGI(TAG, "Matter: Eco %s", val->val.b ? "ON" : "OFF");
-        heater.SetEco(val->val.b);
-    }
-    else if (endpoint_id == powerful_endpoint_id && cluster_id == OnOff::Id &&
-             attribute_id == OnOff::Attributes::OnOff::Id) {
-        ESP_LOGI(TAG, "Matter: Powerful %s", val->val.b ? "ON" : "OFF");
-        heater.SetPowerful(val->val.b);
     }
     return ESP_OK;
 }
