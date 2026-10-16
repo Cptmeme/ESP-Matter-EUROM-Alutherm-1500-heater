@@ -42,7 +42,7 @@ The original Tuya Wi-Fi module was replaced with a **WT0132C6-S5** (ESP32-C6) mo
 ## ⚙️ Installation & Build
 
 ### Prerequisites
-* ESP-IDF v5.3.x
+* ESP-IDF v5.5.x (built with v5.5.4)
 * ESP-Matter SDK (built against `release/v1.5`)
 
 ### Configuration
