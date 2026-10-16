@@ -13,7 +13,7 @@ It replaces the original Tuya Wi-Fi firmware with a custom C++ application runni
 * **Connectivity:** **Matter over Thread** (Minimal Thread Device). Requires a Thread Border Router such as a HomePod Mini, Apple TV 4K or Nest Hub v2.
 * **Thermostat Endpoint:** Heat / Off, target temperature and room temperature. *Heat* switches the heater on in **Program** mode, so the setpoint governs instead of a fixed power level. Eco mode and the manual power levels stay available on the heater itself.
 * **Two-way Sync:** Changes made on the heater itself (buttons, remote) are reported back to Matter.
-* **Full Tuya Handshake:** This heater only responds after the complete Tuya MCU start-up sequence (heartbeat → product query → work mode → network status "online" → query all datapoints), followed by a 15 s heartbeat. The MCU's clock requests are answered.
+* **Full Tuya Handshake:** This heater only responds after the complete Tuya MCU start-up sequence (heartbeat → product query → work mode → network status "connected" → query all datapoints), followed by a 15 s heartbeat. The handshake, the network status (`0x03`) and the command pacing (one command at a time, each waiting up to 300 ms for the MCU's reply) follow ESPHome's `tuya` component, which is known to work with this heater. Unlike ESPHome, a write only counts as answered once the MCU reports the written value, so a quick "Heat + 21 °C" isn't lost or mistaken for power-button presses. The MCU asks for the time every ~10 s; those requests are not answered, as the heater works without a clock.
 * **Factory Reset:** Toggle the heater's power 10 times rapidly (each toggle within 3 s of the previous one) to factory reset the Matter credentials.
 
 ---
@@ -63,6 +63,51 @@ idf.py erase-flash
 # 3. Flash and Monitor
 idf.py flash monitor
 ```
+
+The first flash needs download mode: hold **IO9** (pin 18) to GND while powering up. After that, no jumper is needed (see below).
+
+---
+
+## 🔄 Updating the Firmware
+
+### Versions
+
+Bump all three for every release, or the device ignores the update. The build fails if the two numbers differ.
+
+* `PROJECT_VER` (e.g. `"1.1"`) and `PROJECT_VER_NUMBER` (e.g. `2`) in `CMakeLists.txt`
+* `CONFIG_DEVICE_SOFTWARE_VERSION_NUMBER` in `sdkconfig` / `sdkconfig.defaults` (same number)
+
+### Over the serial wires (no GPIO9 jumper)
+
+Type `matter esp download` on the serial console (UART0, 115200 baud). The module reboots into the ROM download mode and stays there until it is power-cycled.
+
+```bash
+python -m esptool --chip esp32c6 -p <PORT> -b 115200 --before no_reset --after no_reset \
+    write_flash 0x20000 build/thermostat.bin
+# then power-cycle the module
+```
+
+### Over the air (Matter OTA over Thread)
+
+The build also produces `build/thermostat-ota.bin`, a Matter OTA image. Apple Home and Google Home only update certified devices, so you serve it yourself with the Matter SDK's host tools. Build them from the SDK with `./scripts/build/build_examples.py --target darwin-arm64-chip-tool --target darwin-arm64-ota-provider build`.
+
+One-time setup: in the Home app, turn on pairing mode for the heater, then add the provider and the heater to `chip-tool`'s fabric:
+
+```bash
+chip-tool pairing code 2 <setup-code-from-home-app>              # heater = node 2
+chip-ota-provider-app -f build/thermostat-ota.bin --discriminator 3841 --secured-device-port 5565 &
+chip-tool pairing onnetwork-long 1 20202021 3841                 # provider = node 1
+chip-tool accesscontrol write acl '[{"fabricIndex": 1, "privilege": 5, "authMode": 2, "subjects": [112233], "targets": null}, {"fabricIndex": 1, "privilege": 3, "authMode": 2, "subjects": null, "targets": [{"cluster": 41, "endpoint": null, "deviceType": null}]}]' 1 0
+```
+
+Each update (with the provider running and serving the new `thermostat-ota.bin`):
+
+```bash
+chip-tool otasoftwareupdaterequestor announce-otaprovider 1 0 2 0 2 0
+chip-tool basicinformation read software-version 2 0              # afterwards: the new number
+```
+
+The 1.5 MB image takes about 12 minutes over Thread. The heater then restarts into the new version and keeps it once it has run for a minute while attached to the Thread network. If it doesn't get there within 5 minutes, or crashes before that, the bootloader automatically returns to the previous version.
 
 ---
 

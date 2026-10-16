@@ -1,5 +1,7 @@
 #include <esp_err.h>
 #include <esp_log.h>
+#include <esp_ota_ops.h>
+#include <esp_timer.h>
 #include <nvs_flash.h>
 
 #include <esp_matter.h>
@@ -27,6 +29,10 @@
 #include <platform/ESP32/ESP32FactoryDataProvider.h>
 #endif
 using namespace chip::DeviceLayer;
+#endif
+
+#if CONFIG_IDF_TARGET_ESP32C6
+#include <soc/lp_aon_reg.h>
 #endif
 
 #include <app/AttributeAccessInterface.h>
@@ -162,6 +168,65 @@ static esp_err_t app_attribute_update_cb(attribute::callback_type_t type, uint16
     return ESP_OK;
 }
 
+#if CONFIG_ENABLE_CHIP_SHELL && CONFIG_IDF_TARGET_ESP32C6
+// "matter esp download": reboot into the ROM serial download mode, so the module can be
+// reflashed over UART0 (esptool --before no_reset) without strapping GPIO9.
+static esp_err_t download_mode_handler(int argc, char **argv)
+{
+    ESP_LOGW(TAG, "Rebooting into ROM download mode");
+    vTaskDelay(pdMS_TO_TICKS(100));   // let the log line out
+    // FORCE_DOWNLOAD_BOOT + HPSYS_SW_RESET: a direct system reset. Not esp_restart(),
+    // which arms a 1 s RTC watchdog that esptool doesn't disable over a UART adapter.
+    REG_WRITE(LP_AON_SYS_CFG_REG, LP_AON_FORCE_DOWNLOAD_BOOT | LP_AON_HPSYS_SW_RESET);
+    return ESP_OK;
+}
+
+static const esp_matter::console::command_t download_mode_command = {
+    .name = "download",
+    .description = "Reboot into the ROM serial download mode. Usage: matter esp download.",
+    .handler = download_mode_handler,
+};
+#endif
+
+// --- OTA ROLLBACK ---
+// With CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE an image installed by OTA boots as "pending
+// verify". Keep it once it has run for a minute and is attached to the Thread network
+// (so it can still receive the next update); otherwise go back to the previous image.
+static esp_timer_handle_t s_ota_verify_timer;
+
+static void app_ota_verify_check(intptr_t)
+{
+    int64_t uptime_s = esp_timer_get_time() / 1000000;
+    if (uptime_s >= 60 && chip::DeviceLayer::ConnectivityMgr().IsThreadAttached()) {
+        esp_timer_stop(s_ota_verify_timer);
+        esp_ota_mark_app_valid_cancel_rollback();
+        ESP_LOGI(TAG, "OTA: new firmware confirmed");
+    } else if (uptime_s >= 300) {
+        ESP_LOGE(TAG, "OTA: new firmware not on the Thread network after 5 min, rolling back");
+        esp_ota_mark_app_invalid_rollback_and_reboot();
+    }
+}
+
+static void app_ota_verify_tick(void *)
+{
+    chip::DeviceLayer::PlatformMgr().ScheduleWork(app_ota_verify_check, 0);   // CHIP thread, stack locked
+}
+
+static void app_ota_verify_start()
+{
+    esp_ota_img_states_t state;
+    if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) != ESP_OK ||
+        state != ESP_OTA_IMG_PENDING_VERIFY) {
+        return;
+    }
+    ESP_LOGW(TAG, "OTA: running new firmware, confirming once it is on the Thread network");
+    esp_timer_create_args_t args = {};
+    args.callback = app_ota_verify_tick;
+    args.name = "ota_verify";
+    esp_timer_create(&args, &s_ota_verify_timer);
+    esp_timer_start_periodic(s_ota_verify_timer, 10 * 1000000);
+}
+
 extern "C" void app_main()
 {
     nvs_flash_init();
@@ -175,6 +240,9 @@ extern "C" void app_main()
 
     esp_matter::endpoint::thermostat::config_t thermostat_config = {};
     thermostat_config.thermostat.feature_flags = esp_matter::cluster::thermostat::feature::heating::get_id();
+    thermostat_config.thermostat.system_mode = (uint8_t)Thermostat::SystemModeEnum::kOff;   // esp-matter defaults to Auto
+    thermostat_config.thermostat.control_sequence_of_operation =
+        (uint8_t)Thermostat::ControlSequenceOfOperationEnum::kHeatingOnly;                  // esp-matter defaults to cool+heat
 
     endpoint_t *endpoint = esp_matter::endpoint::thermostat::create(node, &thermostat_config, ENDPOINT_FLAG_NONE, thermostat_handle);
     thermostat_endpoint_id = endpoint::get_id(endpoint);
@@ -192,12 +260,9 @@ extern "C" void app_main()
         if (!esp_matter::attribute::get(cluster, Thermostat::Attributes::ThermostatRunningState::Id)) {
             esp_matter::attribute::create(cluster, Thermostat::Attributes::ThermostatRunningState::Id, ATTRIBUTE_FLAG_NULLABLE, esp_matter_bitmap16(0));
         }
-
-        // Force Flags
-        esp_matter_attr_val_t feature_val = esp_matter_bitmap32(1); 
-        attribute::update(thermostat_endpoint_id, Thermostat::Id, Thermostat::Attributes::FeatureMap::Id, &feature_val);
-        esp_matter_attr_val_t seq_val = esp_matter_enum8(2); 
-        attribute::update(thermostat_endpoint_id, Thermostat::Id, Thermostat::Attributes::ControlSequenceOfOperation::Id, &seq_val);
+        // FeatureMap and ControlSequenceOfOperation come from thermostat_config above. Don't
+        // attribute::update() them here: a changed value is reported, which crashes before
+        // esp_matter::start() (first boot after an erase or factory reset).
     }
 
     chip::app::AttributeAccessInterfaceRegistry::Instance().Register(&sLocalTempAccessor);
@@ -229,6 +294,7 @@ extern "C" void app_main()
 
     esp_matter::start(app_event_cb);
     app_driver_thermostat_set_defaults(thermostat_endpoint_id);
+    app_ota_verify_start();
 
     #if CONFIG_ENABLE_ENCRYPTED_OTA
     err = esp_matter_ota_requestor_encrypted_init(s_decryption_key, s_decryption_key_len);
@@ -240,6 +306,9 @@ extern "C" void app_main()
     esp_matter::console::wifi_register_commands();
     esp_matter::console::factoryreset_register_commands();
     esp_matter::console::attribute_register_commands();
+#if CONFIG_IDF_TARGET_ESP32C6
+    esp_matter::console::add_commands(&download_mode_command, 1);
+#endif
 #if CONFIG_OPENTHREAD_CLI
     esp_matter::console::otcli_register_commands();
 #endif
