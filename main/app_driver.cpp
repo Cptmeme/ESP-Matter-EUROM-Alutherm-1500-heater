@@ -31,10 +31,10 @@ static void tuya_poll_task(void *pvParameters)
     ESP_LOGI(TAG, "Tuya Poll Task Started");
     vTaskDelay(pdMS_TO_TICKS(300));   // let the UART/MCU settle after boot
     while (1) {
-        // Service() reads the UART, drives the product/work-mode/wifi-status
-        // handshake, then runs heartbeat + status keep-alive in RUNNING.
+        // Service() reads the UART, drives the product/work-mode/network-status
+        // handshake, sends queued commands one at a time and runs the heartbeat.
         heater.Service();
-        vTaskDelay(pdMS_TO_TICKS(50));
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
@@ -83,7 +83,10 @@ static void tuya_state_change_callback(const heater_state_t *state)
     AppEventData *data = (AppEventData *)malloc(sizeof(AppEventData));
     if (data) {
         data->state = *state;
-        chip::DeviceLayer::PlatformMgr().ScheduleWork(AppDriverUpdateTask, (intptr_t)data);
+        // Fails before the Matter stack is up; app_driver_thermostat_set_defaults() resyncs then
+        if (chip::DeviceLayer::PlatformMgr().ScheduleWork(AppDriverUpdateTask, (intptr_t)data) != CHIP_NO_ERROR) {
+            free(data);
+        }
     }
 }
 
@@ -120,7 +123,16 @@ esp_err_t app_driver_attribute_update(app_driver_handle_t driver_handle, uint16_
     return ESP_OK;
 }
 
-esp_err_t app_driver_thermostat_set_defaults(uint16_t endpoint_id) { return ESP_OK; }
+esp_err_t app_driver_thermostat_set_defaults(uint16_t endpoint_id)
+{
+    // Called once the Matter stack runs. If the heater already reported before that,
+    // its first update was dropped, so push the current state now.
+    if (heater.IsReady()) {
+        heater_state_t state = heater.GetState();
+        tuya_state_change_callback(&state);
+    }
+    return ESP_OK;
+}
 
 app_driver_handle_t app_driver_thermostat_init()
 {
