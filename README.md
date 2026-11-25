@@ -42,8 +42,10 @@ The original Tuya Wi-Fi module was replaced with a **WT0132C6-S5** (ESP32-C6) mo
 ## ⚙️ Installation & Build
 
 ### Prerequisites
-* ESP-IDF v5.5.x (built with v5.5.4)
-* ESP-Matter SDK (built against `release/v1.5`)
+* ESP-IDF v6.0.2
+* ESP-Matter SDK v1.6.1 (`release/v1.6.1`)
+
+Versions up to 1.2 were built with ESP-IDF v5.5.4 and ESP-Matter v1.5.
 
 ### Configuration
 1.  **Partition Table:** A custom `partitions.csv` is used to allocate space for Matter credentials and Thread storage.
@@ -108,6 +110,8 @@ chip-tool basicinformation read software-version 2 0              # afterwards: 
 ```
 
 The 1.5 MB image takes about 12 minutes over Thread. The heater then restarts into the new version and keeps it once it has run for a minute while attached to the Thread network. If it doesn't get there within 5 minutes, or crashes before that, the bootloader automatically returns to the previous version.
+
+The bootloader can start apps built with newer ESP-IDF versions, but not older ones. A heater flashed over serial with version 1.3 or later (ESP-IDF 6) can't be updated back to 1.2 or earlier (ESP-IDF 5.5). One flashed with an earlier version can take 1.3 over the air.
 
 ---
 
